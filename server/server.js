@@ -1,8 +1,14 @@
 const http = require('http')
 const express = require('express')
 const ws = require('ws')
+const nodeMailer = require('nodemailer')
+var bodyParser = require("body-parser");
+var app = express();
 
-var app = express()
+//use body-parser as middle-ware.
+app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json());
+
 
 //initialize a simple http server
 const server = http.createServer(app)
@@ -91,7 +97,7 @@ wss.on('connection', function (ws) {
         		console.log(msgJson["create_response"]);
 
         		var obj = Object.assign({"client_id": msgJson["client_id"]}, {"last_update": msgJson["last_update"]}, msgJson["create_response"])
-        		insertdb(obj)  	
+        		insertdb(obj, 'register')  	
 
         		deleteClient(msgJson["client_id"], "1", "1")
         		break;
@@ -192,14 +198,108 @@ function cancelObservation(client_id){
 
 }
 
-app.get('/register/:client_id', function (req, res) {
+// app.get('/register/:client_id', function (req, res) {
 
-	var date = new Date()
-	var obj = {"client_id": req.params.client_id, "last_update": date}
+// 	var date = new Date()
+// 	var obj = {"client_id": req.params.client_id, "last_update": date}
 
-	insertdb(obj)
+// 	insertdb(obj)
 
-	res.send('registered');
+// 	res.send('registered');
+// })
+
+app.post('/login', function(req,res) {
+    var query = {"email": req.body.email, "password": req.body.password}   
+    //console.log(req.body)
+
+    db.collection('register').findOne(query, function(err, result) {
+        if (err) throw err;
+
+        res.send(result)
+    })
+    
+})
+
+app.post('/register', function(req,res) {
+    var account_type = req.body.account_type
+    var date = new Date()
+    var obj
+
+    if (account_type=="premium_account") {
+        obj = {"email": req.body.email, "password": req.body.password, "account_type": req.body.account_type, "payment_due": 30}
+        send_email(req.body.email, 'Smart Coffee Maker Premium Payment Due $30')
+    } else {
+        obj = {"email": req.body.email, "password": req.body.password, "account_type": req.body.account_type, "payment_due": 0}
+    }
+    insertdb(obj, 'register')
+    res.send('registered');
+    
+})
+
+app.post('/upgrade', function(req,res) {
+    var account_type = req.body.account_type
+    var query = {"email": req.body.email}
+    var obj = {"email": req.body.email, "account_type": "premium_account", "payment_due": 30}
+    updatedb(query, obj)
+    send_email(req.body.email, 'Smart Coffee Maker Premium Payment Due $30')
+    res.send('upgraded');
+    
+})
+
+app.get('/payment_due', function(req, res) {
+    var query = {"email": req.query.email}
+
+    db.collection('register').findOne(query, function(err, result) {
+        if (err) throw err;
+
+        console.log(result)
+        res.send(result)
+    })
+})
+
+app.get('/brew_history', function (req, res) {
+    var query = {"email": req.query.email}
+
+    db.collection('brew_history').find(query).toArray(function(err, result) {
+        if (err) throw err;
+
+        res.send(result)
+    })
+})
+
+app.post('/brew_history', function (req, res) {
+    var obj = {"email": req.body.email, "maker_select": req.body.maker_select, "flavor_select":req.body.flavor_select, 
+    "sugar_check": req.body.sugar_check, "milk_check": req.body.milk_check, "date": req.body.date}
+
+    db.collection('brew_history').insertOne(obj, function(err, r) {
+        if (err) throw err;
+
+        console.log('1 record inserted.');
+        db.collection('brew_history').find().toArray(function (error, result) {
+            if (error) throw error
+
+            res.send(result)
+        })
+    })
+})
+
+app.post('/request_repair', function (req, res) {
+    var obj = {"email": req.body.email, "request_date": req.body.request_date}
+
+    insertdb(obj, 'request_repair')
+    res.send('request received')
+})
+
+app.post('/pay', function(req, res) {
+    var query = {"email": req.body.email}
+    var payment_due = req.body.payment_due
+    var obj = {"email": req.body.email, "payment_due": payment_due}
+    updatedb(query, obj)
+
+    if (payment_due > 0) {
+        send_email(req.body.email, 'Smart Coffee Maker Premium Payment Due $'+payment_due)
+    }    
+    res.send('paid')
 })
 
 app.get('/deregister/:client_id', function(req, res) {
@@ -218,9 +318,35 @@ app.get('/deregister/:client_id', function(req, res) {
 	res.send('deregistered');
 })
 
+function send_email(email, subject) {
+  let transporter = nodeMailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true,
+      auth: {
+          // should be replaced with real sender's account
+          user: '4hjiang@gmail.com',
+          pass: 'jianghe273'
+      }
+  });
+  let mailOptions = {
+      // should be replaced with real recipient's account
+      to: email,
+      subject: subject,
+      body: 'You have received a bill for your premium account from Smart Coffee Maker'
+  };
+  transporter.sendMail(mailOptions, (error, info) => {
+      if (error) {
+          return console.log(error);
+      }
+      console.log('Message %s sent: %s', info.messageId, info.response);
+  });
+
+}
+
 function updatedb(query, obj) {
 	var new_val = {$set: obj}
-	db.collection('register').updateOne(query, new_val, function(err, result) {
+	db.collection('register').updateOne(query, new_val, {upsert:true}, function(err, result) {
 		if (err) throw err;
 
 		console.log('1 record updated');
@@ -232,12 +358,13 @@ function updatedb(query, obj) {
 	})
 }
 
-function insertdb(obj) {
-	db.collection('register').insertOne(obj, function(err, result) {
+function insertdb(obj, db_name) {
+
+	db.collection(db_name).insertOne(obj, function(err, result) {
 		if (err) throw err;
 
 		console.log('1 record inserted.');
-		db.collection('register').find().toArray(function (err, result) {
+		db.collection(db_name).find().toArray(function (err, result) {
 		    if (err) throw err
 
 		    console.log(result)
