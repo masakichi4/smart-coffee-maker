@@ -325,8 +325,8 @@ function send_email(email, subject) {
       secure: true,
       auth: {
           // should be replaced with real sender's account
-          user: '4hjiang@gmail.com',
-          pass: 'jianghe273'
+          user: 'sender@example.com',
+          pass: 'password'
       }
   });
   let mailOptions = {
